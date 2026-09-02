@@ -1,6 +1,6 @@
 # Strategic Triage Board — Architecture & Logic
 
-A personal task-triage web app. Items flow through time-bucketed lanes (Today, This Week, etc.) and are organized by strategic initiatives. Single-user, password-gated, locally stored with optional Supabase sync. Live at <https://meagan-design.github.io/triage/>.
+A personal task-triage web app. Items flow through time-bucketed lanes (Today, This Week, etc.) and are organized by strategic initiatives. Single-user, password-gated, locally stored with optional Supabase sync. Live at <https://meaglewellyn-blip.github.io/triage/>.
 
 ---
 
@@ -8,7 +8,7 @@ A personal task-triage web app. Items flow through time-bucketed lanes (Today, T
 
 - **Frontend:** Vanilla HTML / CSS / JS — no build step, no framework.
 - **Sync:** Supabase (Postgres + Realtime), with localStorage as the primary cache.
-- **Hosting:** GitHub Pages from the `main` branch of `meagan-design/triage`.
+- **Hosting:** GitHub Pages from the `main` branch of `meaglewellyn-blip/triage`.
 - **Auth:** Client-side SHA-256 password gate (one shared password for the whole board).
 
 ## File Layout
@@ -18,7 +18,7 @@ Triage/
 ├── index.html        Markup: sidebar, lanes, modals, password gate
 ├── styles.css        All styling — warm cream palette, dialog rules,
 │                     drag/drop visuals, work-mode + stage pills
-├── app.js            All logic (~2700 lines, IIFE-scoped)
+├── app.js            All logic (~3900 lines, IIFE-scoped)
 ├── ARCHITECTURE.md   This file
 └── .claude/          (gitignored) launch.json + serve.py for local preview
 ```
@@ -52,6 +52,7 @@ The core unit. Every captured task is an item.
   nextStep:        string,
   waitingOn:       string,               // free-text person/thing
   waitingOnItemId: uuid | null,          // OR a hard link to another item
+  checklist:       ChecklistEntry[],     // optional subtasks; [] when unused
   archived:        boolean,
   completedAt:     timestamp | null,
   createdAt:       timestamp,
@@ -90,7 +91,7 @@ Order shown in the sidebar nav (and roughly the page):
 | Inbox                   | `inbox`                | Quick-capture landing zone |
 | Overdue                 | `overdue` (virtual)    | Auto-aggregated view of items past their due date |
 | Needs Placement         | `needs-placement`      | Items awaiting triage — ClickUp imports + unplaced captures land here |
-| Today                   | `today`                | Up to 5 active items (warning shown if exceeded) |
+| Today                   | `today`                | Today's active items — no cap |
 | This Week               | `this-week`            | Current week's commitments |
 | This Month              | `this-month`           | Slightly farther horizon |
 | Strategic Radar         | `strategic-radar`      | Active initiatives — grouped by initiative inside the lane |
@@ -179,6 +180,36 @@ The Next Step field has two lightweight helpers, none of which block save:
 
 `nextStep` is also surfaced on the collapsed card as a single `→` line under the title, max 2 lines, hidden when empty.
 
+#### Optional checklist
+
+Any item can carry a list of subtasks. Entirely optional — items without one show
+no checklist UI at all.
+
+```js
+ChecklistEntry = { id: uuid, text: string, done: boolean }
+```
+
+- **Editor** — in the capture/edit modal, below Notes. Rows are held in a
+  module-level `_formChecklist` array while the modal is open (not as form
+  fields), so they can be added and removed without fighting `FormData`.
+  Written back to the item on submit; **blank rows are discarded**, so an
+  accidental "+ Add" never persists. `Enter` inside a row adds the next row
+  rather than submitting the form.
+- **Collapsed card** — a compact progress chip (`☐ 2/5`, or `☑ 5/5` tinted
+  when complete) in the meta row. Renders nothing when there is no checklist.
+- **Expanded card** — active entries render as a live list with working
+  checkboxes; ticking one goes through `updateItem` so `updatedAt` is stamped
+  and the sync trust guards treat it as a genuine local edit. Completed
+  entries collapse behind a `<details>` summary. When *everything* is done the
+  whole list collapses to "All N checklist items done", so a finished
+  checklist stops taking up space.
+
+Persistence needs no special handling: `buildStateData` already serialises
+`state.items` wholesale, so `checklist` rides along to localStorage and
+Supabase automatically. `applyMigrations` normalises the field on every load
+path — older items simply get `[]`, and malformed entries are coerced rather
+than dropped.
+
 ### Edit
 
 Click the **Edit** button on any card to reopen the same modal with the item loaded. Submitting calls `updateItem` and stamps `updatedAt`.
@@ -227,7 +258,14 @@ There are two `<dialog>` elements and two `position: fixed` popovers:
 | `#move-popover` | Lane-picker shown next to a card's Move button |
 | `#initiative-action-popover` | View / Table / Complete / Reopen / Delete actions for a sidebar initiative |
 
-**Important CSS rule:** `dialog:not([open]) { display: none !important; }` is set globally to prevent dialogs (which can have custom `display: flex` rules) from leaking visible content when closed.
+**Important CSS rules:** `dialog:not([open]) { display: none !important; }` is set globally to prevent dialogs (which can have custom `display: flex` rules) from leaking visible content when closed.
+
+`[hidden] { display: none !important; }` is set for the same reason. Author rules
+like `.new-initiative-row { display: flex }` silently outrank the UA stylesheet's
+`[hidden] { display: none }`, which had left the inline "+ Add Initiative" row and
+the empty "Linked:" chip permanently visible inside the capture modal even though
+the JS believed both were hidden. Any element toggled via `el.hidden` depends on
+this rule.
 
 **Card-action click delegation lives on `document.body`**, not `#main-content`, so clicks inside the initiative detail modal correctly fire Edit / Done / Table / Archive / Delete.
 
@@ -267,6 +305,7 @@ if (item.lane === 'open-loops')                          item.lane = 'needs-plac
 if (['communicate','move-forward'].includes(workMode))   item.workMode = null;
 if (item.stage === 'Waiting')                            item.stage = 'Blocked';
 if (item.stage === 'Ready')                              item.stage = 'Pending';
+if (!Array.isArray(item.checklist))                      item.checklist = [];
 ```
 
 A v1→v2 migration also exists (`migrateItem`) for items captured under the original schema with `status`, `mentalWeight`, `executionType` fields.
@@ -464,7 +503,6 @@ A `setupScrollSpy()` uses `IntersectionObserver` to highlight the active sidebar
 ```js
 STORAGE_KEY      = 'triage_board_v4'
 AUTH_SESSION_KEY = 'triage_authed_v1'
-TODAY_MAX        = 5       // warning shown when Today exceeds this
 SUPABASE_URL     = '...'   // hardcoded in app.js
 SUPABASE_ANON_KEY = '...'  // hardcoded in app.js
 AUTH_HASH        = '...'   // SHA-256 of access password
@@ -475,7 +513,7 @@ DEFAULT_TABLED   = ['Better Websites']  // initiatives tabled by default on fres
 
 ## Hosting & Deploy
 
-- Repo: `meagan-design/triage` on GitHub.
+- Repo: `meaglewellyn-blip/triage` on GitHub (transferred from `meagan-design` on 2026-09-02).
 - Branch `main` is served as the live site by GitHub Pages.
 - No CI — push to `main` and Pages rebuilds in ~30–60s.
 - Local preview can be served from any static file server (`python3 -m http.server 8081` from this directory).

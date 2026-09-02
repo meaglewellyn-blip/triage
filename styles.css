@@ -487,16 +487,6 @@ body {
 /* Today */
 .lane--today .lane-header h2 { font-size: 1.1rem; }
 
-.today-cap-warning {
-  font-size: 0.75rem;
-  color: var(--color-accent-warm);
-  padding: var(--space-sm) var(--space-md);
-  background: var(--color-accent-warm-light);
-  border-radius: var(--radius-sm);
-  border-left: 3px solid var(--color-accent-warm);
-  margin-top: calc(-1 * var(--space-sm));
-}
-
 .card-list--today {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
@@ -1355,6 +1345,12 @@ dialog#distraction-modal #distraction-form {
   white-space: pre-wrap;
 }
 
+/* pre-wrap above preserves newlines in Notes, but must not leak into
+   generated markup (checklist), where template indentation would show
+   up as stray blank space. */
+.card-detail-value .card-checklist,
+.card-detail-value .card-checklist-done-wrap { white-space: normal; }
+
 .card-detail-breadcrumb {
   font-size: 0.72rem;
   color: var(--color-import-progress);
@@ -1649,6 +1645,188 @@ dialog#capture-modal::backdrop {
 .form-group textarea::placeholder { color: var(--color-text-muted); }
 .form-group textarea { resize: vertical; min-height: 60px; }
 
+/* Notes needs room to breathe — long context is common. Tall by default,
+   capped so the field itself scrolls instead of pushing the modal taller. */
+#form-notes {
+  min-height: 150px;
+  max-height: 45vh;
+  overflow-y: auto;
+  line-height: 1.55;
+}
+
+/* ============================================================
+   CHECKLIST  (optional per-item subtasks)
+   ============================================================ */
+
+.checklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.optional-tag {
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-left: 4px;
+}
+
+.checklist-progress {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.checklist-editor:empty { display: none; }
+
+.checklist-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 6px;
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
+.checklist-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.checklist-row input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.checklist-row .checklist-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px var(--space-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+  color: var(--color-text-primary);
+  background: var(--color-surface);
+  outline: none;
+}
+
+.checklist-row .checklist-text:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(139,116,144,0.12);
+}
+
+.checklist-row--done .checklist-text {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+
+.checklist-remove {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 1.05rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.checklist-remove:hover { color: var(--color-accent-warm); background: var(--color-accent-warm-light); }
+
+.checklist-add-btn {
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-family: var(--font-sans);
+  padding: 6px var(--space-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 150ms, color 150ms;
+}
+
+.checklist-add-btn:hover { border-color: var(--color-accent); color: var(--color-accent); }
+
+/* --- Checklist on cards --- */
+
+.checklist-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.checklist-chip--complete {
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+  border-color: var(--color-accent-light);
+}
+
+.card-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card-checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  padding: 2px 0;
+}
+
+.card-checklist-item input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.card-checklist-item--done span {
+  text-decoration: line-through;
+  color: var(--color-text-muted);
+}
+
+.card-checklist-done-wrap { margin-top: 4px; }
+
+.card-checklist-done-wrap > summary {
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+}
+
+.card-checklist-done-wrap > summary::-webkit-details-marker { display: none; }
+.card-checklist-done-wrap > summary::before { content: '▸ '; }
+.card-checklist-done-wrap[open] > summary::before { content: '▾ '; }
+
 /* Soft helper text under a form field — never blocks save */
 .form-helper {
   font-size: 0.72rem;
@@ -1864,6 +2042,13 @@ dialog#initiative-detail-modal[open] {
   display: flex;
   flex-direction: column;
 }
+
+/* The [hidden] attribute must always win. Author rules like
+   .new-initiative-row { display: flex } silently beat the UA stylesheet's
+   [hidden] { display: none }, which left the inline "+ Add Initiative" row
+   and the empty "Linked:" chip permanently visible in the capture modal.
+   Same defensive intent as the dialog rule below. */
+[hidden] { display: none !important; }
 
 dialog:not([open]) {
   display: none !important;

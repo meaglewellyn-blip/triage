@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260620c">
+  <link rel="stylesheet" href="styles.css?v=20260902a">
 </head>
 <body class="app-locked">
 
@@ -102,7 +102,6 @@
         <div class="lane-header-left"><h2>Today</h2><span class="lane-count" id="count-today"></span></div>
         <button class="add-to-lane-btn" data-lane="today">+ Add</button>
       </header>
-      <p class="today-cap-warning" id="today-cap-warning" hidden>More than 5 items — consider moving some to This Week.</p>
       <div class="card-list card-list--today" id="cards-today"></div>
     </section>
 
@@ -294,7 +293,16 @@
 
       <div class="form-group form-group--full">
         <label for="form-notes">Notes</label>
-        <textarea name="notes" id="form-notes" rows="2" placeholder="Context, background, links..."></textarea>
+        <textarea name="notes" id="form-notes" rows="8" placeholder="Context, background, links..."></textarea>
+      </div>
+
+      <div class="form-group form-group--full">
+        <div class="checklist-head">
+          <label for="checklist-add-btn">Checklist <span class="optional-tag">optional</span></label>
+          <span id="checklist-progress" class="checklist-progress" hidden></span>
+        </div>
+        <div id="checklist-editor" class="checklist-editor"></div>
+        <button type="button" id="checklist-add-btn" class="checklist-add-btn">+ Add checklist item</button>
       </div>
 
       <div class="form-group form-group--full">
@@ -502,6 +510,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-  <script src="app.js?v=20260620c"></script>
+  <script src="app.js?v=20260902a"></script>
 </body>
 </html>

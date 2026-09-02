@@ -10,7 +10,7 @@
   ========================================================== */
 
   const STORAGE_KEY = 'triage_board_v4';
-  const APP_VERSION = '20260620c';
+  const APP_VERSION = '20260902a';
 
   /* ----------------------------------------------------------
      SUPABASE CONFIG
@@ -93,8 +93,6 @@
   const CLICKUP_STATUS_DEFAULT = {
     lane: 'needs-placement', displayGroup: 'Imported — To Do', itemStage: 'Unclear',
   };
-
-  const TODAY_MAX = 5;
 
   /* ==========================================================
      2. STATE
@@ -762,6 +760,19 @@
       if (['communicate', 'move-forward'].includes(item.workMode)) item.workMode = null;
       if (item.stage === 'Waiting') item.stage = 'Blocked';
       if (item.stage === 'Ready')   item.stage = 'Pending';
+      // Checklist is additive and optional — normalise shape without ever
+      // discarding existing entries. Older items simply have none.
+      if (!Array.isArray(item.checklist)) {
+        item.checklist = [];
+      } else {
+        item.checklist = item.checklist
+          .filter(c => c && typeof c === 'object')
+          .map(c => ({
+            id:   c.id || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2)),
+            text: typeof c.text === 'string' ? c.text : String(c.text || ''),
+            done: !!c.done,
+          }));
+      }
     });
   }
 
@@ -1058,6 +1069,7 @@
       nextStep:        '',
       waitingOn:       '',
       waitingOnItemId: null,
+      checklist:       [],
       completedAt:     null,
       createdAt:       Date.now(),
       updatedAt:       Date.now(),
@@ -1078,6 +1090,17 @@
       !state.tabledInitiatives.includes(i) &&
       !state.completedInitiatives.includes(i)
     );
+  }
+
+  function toggleChecklistItem(itemId, entryId) {
+    const item = state.items.find(i => i.id === itemId);
+    if (!item || !Array.isArray(item.checklist)) return;
+    const entry = item.checklist.find(c => c.id === entryId);
+    if (!entry) return;
+    entry.done = !entry.done;
+    // Route through updateItem so updatedAt is stamped and the sync
+    // trust guards see this as a genuine local edit.
+    updateItem(itemId, { checklist: item.checklist });
   }
 
   function updateItem(id, changes) {
@@ -1839,6 +1862,51 @@
      7. CARD RENDERER
   ========================================================== */
 
+  /* Compact checklist progress chip for the collapsed card. Renders
+     nothing when the item has no checklist, so uncluttered items stay clean. */
+  function checklistChipHtml(item) {
+    const list = item.checklist || [];
+    if (!list.length) return '';
+    const done     = list.filter(c => c.done).length;
+    const complete = done === list.length;
+    return `<span class="checklist-chip ${complete ? 'checklist-chip--complete' : ''}"
+                  title="Checklist: ${done} of ${list.length} done">${complete ? '&#x2611;' : '&#x2610;'} ${done}/${list.length}</span>`;
+  }
+
+  /* Checklist block for the expanded card detail.
+     Active items render expanded; a fully-done list collapses to a summary. */
+  function checklistDetailHtml(item) {
+    const list = item.checklist || [];
+    if (!list.length) return '';
+
+    const row = c => `
+      <li class="card-checklist-item ${c.done ? 'card-checklist-item--done' : ''}">
+        <input type="checkbox" ${c.done ? 'checked' : ''}
+               data-action="toggle-check"
+               data-id="${escapeHtml(item.id)}" data-cid="${escapeHtml(c.id)}"
+               aria-label="${escapeHtml(c.text)}">
+        <span>${escapeHtml(c.text)}</span>
+      </li>`;
+
+    const active = list.filter(c => !c.done);
+    const done   = list.filter(c => c.done);
+
+    // Nothing active — keep it out of the way behind a collapsed summary
+    if (!active.length) {
+      return `<details class="card-checklist-done-wrap">
+          <summary>All ${list.length} checklist item${list.length === 1 ? '' : 's'} done</summary>
+          <ul class="card-checklist">${done.map(row).join('')}</ul>
+        </details>`;
+    }
+
+    return `<ul class="card-checklist">${active.map(row).join('')}</ul>
+      ${done.length ? `
+        <details class="card-checklist-done-wrap">
+          <summary>${done.length} done</summary>
+          <ul class="card-checklist">${done.map(row).join('')}</ul>
+        </details>` : ''}`;
+  }
+
   function renderCard(item, { tabled = false, completed = false, showCompletedDate = false } = {}) {
     const isExpanded  = state.activeItemId === item.id;
     const dueDateStr  = formatDueDate(item.dueDate);
@@ -1879,6 +1947,7 @@
               : ''}
             ${workModeBadge(item.workMode)}
             ${stagePillHtml(item.stage)}
+            ${checklistChipHtml(item)}
             ${completedDateStr ? `<span class="completed-date-badge">${escapeHtml(completedDateStr)}</span>` : ''}
             ${item.clickupStatus ? `<span class="clickup-status-badge">${escapeHtml(item.clickupStatus)}</span>` : ''}
           </div>
@@ -1913,6 +1982,10 @@
 
     if (item.notes)    fields.push({ label: 'Notes',     valueHtml: escapeHtml(item.notes) });
     if (item.nextStep) fields.push({ label: 'Next Step', valueHtml: escapeHtml(item.nextStep) });
+
+    if ((item.checklist || []).length) {
+      fields.push({ label: 'Checklist', valueHtml: checklistDetailHtml(item) });
+    }
 
     // Waiting On — plain text or linked item
     if (item.waitingOn || item.waitingOnItemId) {
@@ -1992,18 +2065,12 @@
     const container = document.getElementById('cards-' + laneId);
     if (!container) return;
 
-    const items        = getItemsForLane(laneId);
-    const displayItems = laneId === 'today' ? items.slice(0, TODAY_MAX) : items;
+    const items = getItemsForLane(laneId);
 
     updateLaneMeta(laneId, items.length);
 
-    if (laneId === 'today') {
-      const warn = document.getElementById('today-cap-warning');
-      if (warn) warn.hidden = items.length <= TODAY_MAX;
-    }
-
-    container.innerHTML = displayItems.length
-      ? displayItems.map(i => renderCard(i)).join('')
+    container.innerHTML = items.length
+      ? items.map(i => renderCard(i)).join('')
       : '<p class="lane-empty">Nothing here</p>';
   }
 
@@ -2623,6 +2690,97 @@
     }
   }
 
+  /* --- Checklist editor (capture/edit modal) ---------------------
+     Held in a module-level array while the modal is open rather than as
+     form fields, so rows can be added/removed/reordered without fighting
+     FormData. Written back to the item on submit. -------------------- */
+
+  let _formChecklist = [];
+
+  function newChecklistEntry(text = '') {
+    return {
+      id:   crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2),
+      text,
+      done: false,
+    };
+  }
+
+  function renderChecklistEditor() {
+    const wrap = document.getElementById('checklist-editor');
+    const prog = document.getElementById('checklist-progress');
+    if (!wrap) return;
+
+    wrap.innerHTML = _formChecklist.map(c => `
+      <div class="checklist-row ${c.done ? 'checklist-row--done' : ''}" data-cid="${escapeHtml(c.id)}">
+        <input type="checkbox" ${c.done ? 'checked' : ''} data-cid="${escapeHtml(c.id)}"
+               aria-label="Mark done">
+        <input type="text" class="checklist-text" value="${escapeHtml(c.text)}"
+               data-cid="${escapeHtml(c.id)}" placeholder="What needs doing?">
+        <button type="button" class="checklist-remove" data-cid="${escapeHtml(c.id)}"
+                aria-label="Remove checklist item">&times;</button>
+      </div>`).join('');
+
+    if (prog) {
+      const total = _formChecklist.length;
+      const done  = _formChecklist.filter(c => c.done).length;
+      prog.hidden      = total === 0;
+      prog.textContent = total ? `${done}/${total} done` : '';
+    }
+  }
+
+  function setupChecklistEditor() {
+    const wrap   = document.getElementById('checklist-editor');
+    const addBtn = document.getElementById('checklist-add-btn');
+
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        _formChecklist.push(newChecklistEntry());
+        renderChecklistEditor();
+        const rows = document.querySelectorAll('#checklist-editor .checklist-text');
+        if (rows.length) rows[rows.length - 1].focus();
+      });
+    }
+
+    if (!wrap) return;
+
+    // Text edits — keep the array in sync without a re-render (preserves caret)
+    wrap.addEventListener('input', e => {
+      const txt = e.target.closest('.checklist-text');
+      if (!txt) return;
+      const entry = _formChecklist.find(c => c.id === txt.dataset.cid);
+      if (entry) entry.text = txt.value;
+    });
+
+    // Checkbox toggles
+    wrap.addEventListener('change', e => {
+      const box = e.target.closest('input[type="checkbox"]');
+      if (!box) return;
+      const entry = _formChecklist.find(c => c.id === box.dataset.cid);
+      if (entry) { entry.done = box.checked; renderChecklistEditor(); }
+    });
+
+    // Remove a row
+    wrap.addEventListener('click', e => {
+      const rm = e.target.closest('.checklist-remove');
+      if (!rm) return;
+      e.preventDefault();
+      _formChecklist = _formChecklist.filter(c => c.id !== rm.dataset.cid);
+      renderChecklistEditor();
+    });
+
+    // Enter inside a checklist row adds the next one instead of submitting
+    wrap.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      const txt = e.target.closest('.checklist-text');
+      if (!txt) return;
+      e.preventDefault();
+      _formChecklist.push(newChecklistEntry());
+      renderChecklistEditor();
+      const rows = document.querySelectorAll('#checklist-editor .checklist-text');
+      if (rows.length) rows[rows.length - 1].focus();
+    });
+  }
+
   function openCaptureModal(prefill = {}) {
     const dialog    = document.getElementById('capture-modal');
     const form      = document.getElementById('capture-form');
@@ -2650,6 +2808,9 @@
       document.getElementById('form-notes').value      = item.notes || '';
       document.getElementById('form-next-step').value  = item.nextStep || '';
 
+      _formChecklist = (item.checklist || []).map(c => ({ ...c }));
+      renderChecklistEditor();
+
       if (item.waitingOnItemId) {
         const linked = state.items.find(i => i.id === item.waitingOnItemId);
         if (linked) {
@@ -2665,6 +2826,8 @@
       state.ui.editingItemId = null;
       titleEl.textContent    = 'Capture Item';
       submitBtn.textContent  = 'Save Item';
+      _formChecklist = [];
+      renderChecklistEditor();
       if (prefill.lane)       document.getElementById('form-lane').value       = prefill.lane;
       if (prefill.initiative) document.getElementById('form-initiative').value = prefill.initiative;
     }
@@ -2687,6 +2850,8 @@
     if (vague) { vague.hidden = true; vague.textContent = ''; }
     const prompts = document.querySelector('.triage-prompts');
     if (prompts) prompts.open = false;
+    _formChecklist = [];
+    renderChecklistEditor();
     state.ui.editingItemId = null;
   }
 
@@ -2707,6 +2872,10 @@
       nextStep:        (data.get('nextStep')       || '').trim(),
       waitingOn:       (data.get('waitingOn')      || '').trim(),
       waitingOnItemId: data.get('waitingOnItemId') || null,
+      // Blank rows are discarded so an accidental "+ Add" never persists
+      checklist:       _formChecklist
+                         .map(c => ({ id: c.id, text: (c.text || '').trim(), done: !!c.done }))
+                         .filter(c => c.text),
     };
 
     if (values.lane === 'waiting' && values.stage !== 'Done') {
@@ -3339,6 +3508,14 @@
       const deleteBtn = e.target.closest('[data-action="delete"]');
       if (deleteBtn) { e.stopPropagation(); deleteItem(deleteBtn.dataset.id); return; }
 
+      // Checklist checkbox on an expanded card — tick off without opening Edit
+      const checkBox = e.target.closest('[data-action="toggle-check"]');
+      if (checkBox) {
+        e.stopPropagation();
+        toggleChecklistItem(checkBox.dataset.id, checkBox.dataset.cid);
+        return;
+      }
+
       // Dependency link in card detail
       const depLink = e.target.closest('.dep-item-link');
       if (depLink && depLink.dataset.id) {
@@ -3808,6 +3985,7 @@
     render();
     setupScrollSpy();
     setupDependencySearch();
+    setupChecklistEditor();
     setupEvents();
     setupRealtimeSync();
     setupVisibilityRefresh();
