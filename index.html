@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260902a">
+  <link rel="stylesheet" href="styles.css?v=20260903a">
 </head>
 <body class="app-locked">
 
@@ -15,6 +15,11 @@
     <header class="sidebar-header">
       <h1>Triage</h1>
       <span class="week-label" id="week-label"></span>
+      <div class="context-toggle" id="context-toggle" role="group" aria-label="Show which items">
+        <button type="button" class="context-toggle-btn" data-context-view="work"     aria-pressed="false">Work</button>
+        <button type="button" class="context-toggle-btn" data-context-view="personal" aria-pressed="false">Personal</button>
+        <button type="button" class="context-toggle-btn" data-context-view="combined" aria-pressed="true">Both</button>
+      </div>
     </header>
 
     <nav class="lane-nav">
@@ -292,6 +297,20 @@
       </div>
 
       <div class="form-group form-group--full">
+        <label>Type</label>
+        <div class="context-choice" id="form-context-choice">
+          <label class="context-choice-opt">
+            <input type="radio" name="context" value="work" checked>
+            <span>Work</span>
+          </label>
+          <label class="context-choice-opt context-choice-opt--personal">
+            <input type="radio" name="context" value="personal">
+            <span>Personal</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="form-group form-group--full">
         <label for="form-notes">Notes</label>
         <textarea name="notes" id="form-notes" rows="8" placeholder="Context, background, links..."></textarea>
       </div>
@@ -510,6 +529,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-  <script src="app.js?v=20260902a"></script>
+  <script src="app.js?v=20260903a"></script>
 </body>
 </html>

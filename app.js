@@ -10,7 +10,7 @@
   ========================================================== */
 
   const STORAGE_KEY = 'triage_board_v4';
-  const APP_VERSION = '20260902a';
+  const APP_VERSION = '20260903a';
 
   /* ----------------------------------------------------------
      SUPABASE CONFIG
@@ -70,6 +70,20 @@
   const STAGES = ['Unclear', 'In progress', 'Pending', 'Blocked', 'Done'];
 
   /* ----------------------------------------------------------
+     CONTEXT — work vs personal
+     Items carry a context; the board shows one or both. The chosen
+     view is a per-device preference, NOT synced state: which lens
+     you are looking through on your phone shouldn't change what
+     your laptop shows.
+  ---------------------------------------------------------- */
+  const CONTEXTS = [
+    { id: 'work',     label: 'Work' },
+    { id: 'personal', label: 'Personal' },
+  ];
+  const CONTEXT_VIEWS   = ['work', 'personal', 'combined'];
+  const CONTEXT_VIEW_KEY = 'triage_context_view_v1';
+
+  /* ----------------------------------------------------------
      CLICKUP STATUS MAP
      Keys are lowercase (matching is case-insensitive).
   ---------------------------------------------------------- */
@@ -106,6 +120,7 @@
     customInitiatives:    [],
     distractions:         [],
     filter:               { initiative: null },
+    contextView:          'combined',   // 'work' | 'personal' | 'combined' (per-device)
     completedFilter:      { initiative: null, period: 'all' },
     activeItemId:         null,
     ui:                   { editingItemId: null, editingDistractionId: null },
@@ -760,6 +775,9 @@
       if (['communicate', 'move-forward'].includes(item.workMode)) item.workMode = null;
       if (item.stage === 'Waiting') item.stage = 'Blocked';
       if (item.stage === 'Ready')   item.stage = 'Pending';
+      // Context is additive: anything not explicitly 'personal' is work.
+      // Every pre-existing item therefore stays exactly where it was.
+      if (item.context !== 'personal') item.context = 'work';
       // Checklist is additive and optional — normalise shape without ever
       // discarding existing entries. Older items simply have none.
       if (!Array.isArray(item.checklist)) {
@@ -1062,6 +1080,7 @@
       clickupList:     null,
       displayGroup:    null,
       lane:            'inbox',
+      context:         'work',
       workMode:        null,
       stage:           'Unclear',
       dueDate:         null,
@@ -1288,9 +1307,41 @@
     return true;
   }
 
+  /* --- Context (work / personal) -------------------------------
+     inContext is the single gate every item-listing path runs through.
+     'combined' lets everything past, so the default view behaves
+     exactly as the board did before contexts existed. --------- */
+
+  function inContext(item) {
+    if (state.contextView === 'combined') return true;
+    // Treat a missing context as work, matching applyMigrations
+    return (item.context || 'work') === state.contextView;
+  }
+
+  function loadContextView() {
+    try {
+      const saved = localStorage.getItem(CONTEXT_VIEW_KEY);
+      if (saved && CONTEXT_VIEWS.includes(saved)) state.contextView = saved;
+    } catch (e) { /* private mode — fall back to the default */ }
+  }
+
+  function setContextView(view) {
+    if (!CONTEXT_VIEWS.includes(view) || view === state.contextView) return;
+    state.contextView = view;
+    try { localStorage.setItem(CONTEXT_VIEW_KEY, view); } catch (e) {}
+    // Per-device preference only — deliberately no saveState() here, so
+    // switching lenses never touches synced data or the trust guards.
+    render();
+  }
+
+  function contextDefaultForCapture() {
+    return state.contextView === 'personal' ? 'personal' : 'work';
+  }
+
   function getItemsForLane(laneId) {
     return state.items.filter(item => {
       if (item.lane !== laneId) return false;
+      if (!inContext(item)) return false;
       if (!isActiveVisible(item)) return false;
       if (state.filter.initiative && item.initiative !== state.filter.initiative) return false;
       return true;
@@ -1862,6 +1913,16 @@
      7. CARD RENDERER
   ========================================================== */
 
+  /* "Personal" marker. Deliberately not a left border — those are already
+     spoken for by lane/stage (waiting, blocked, in-progress), so personal
+     uses a tinted card plus this pill instead of competing for the stripe. */
+  function personalPillHtml() {
+    return `<span class="personal-pill" title="Personal item">` +
+      `<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true">` +
+      `<path d="M8 2.5 2 7v6.5h4.25V10h3.5v3.5H14V7L8 2.5Z" fill="currentColor"/>` +
+      `</svg>Personal</span>`;
+  }
+
   /* Compact checklist progress chip for the collapsed card. Renders
      nothing when the item has no checklist, so uncluttered items stay clean. */
   function checklistChipHtml(item) {
@@ -1914,8 +1975,10 @@
 
     const isInProgress = item.source === 'clickup' && item.displayGroup === 'Imported — In Progress';
     const isDone       = item.stage === 'Done';
+    const isPersonal = item.context === 'personal';
     const cardCls = [
       'card',
+      isPersonal                          ? 'card--personal'    : '',
       tabled                              ? 'card--tabled'      : '',
       completed                           ? 'card--completed'   : '',
       !tabled && !completed && item.stage === 'Blocked' && !isDone ? 'card--blocked'     : '',
@@ -1942,6 +2005,7 @@
           </div>
           ${item.nextStep ? `<div class="card-next-step" title="Next step">${escapeHtml(item.nextStep)}</div>` : ''}
           <div class="card-meta">
+            ${isPersonal ? personalPillHtml() : ''}
             ${item.initiative
               ? `<span class="initiative-tag" title="${escapeHtml(item.initiative)}">${escapeHtml(item.initiative)}</span>`
               : ''}
@@ -2039,6 +2103,8 @@
   function render() {
     closeMovePopover();
     closeInitiativeActionPopover();
+    renderContextToggle();
+    renderQuickCapturePlaceholder();
     renderSidebar();
     LANES.forEach(lane => renderLane(lane.id));
     renderOverdueLane();
@@ -2136,6 +2202,7 @@
   function renderOverdueLane() {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const items = state.items.filter(i =>
+      inContext(i) &&
       i.dueDate &&
       new Date(i.dueDate + 'T00:00:00') < today &&
       i.stage !== 'Done' &&
@@ -2153,7 +2220,7 @@
   function renderTabledItemsLane() {
     const container = document.getElementById('cards-tabled-items');
     if (!container) return;
-    const items = state.items.filter(i => i.lane === 'tabled-items' && !i.archived);
+    const items = state.items.filter(i => inContext(i) && i.lane === 'tabled-items' && !i.archived);
     updateLaneMeta('tabled-items', items.length);
     container.innerHTML = items.length
       ? items.map(i => renderCard(i)).join('')
@@ -2165,7 +2232,7 @@
     const container = document.getElementById('cards-archived-items');
     const countEl   = document.getElementById('count-archived-items');
     if (!container) return;
-    const items = state.items.filter(i => i.archived);
+    const items = state.items.filter(i => inContext(i) && i.archived);
     if (section) section.hidden = items.length === 0;
     if (countEl) countEl.textContent = items.length > 0 ? items.length : '';
     container.innerHTML = items.length
@@ -2217,7 +2284,7 @@
     }
 
     const tabledItems = state.items.filter(i =>
-      i.initiative && state.tabledInitiatives.includes(i.initiative) && i.stage !== 'Done'
+      inContext(i) && i.initiative && state.tabledInitiatives.includes(i.initiative) && i.stage !== 'Done'
     );
     const total = tabledItems.length;
 
@@ -2260,7 +2327,7 @@
     }
 
     const allCompletedItems = state.items.filter(i =>
-      i.initiative && state.completedInitiatives.includes(i.initiative)
+      inContext(i) && i.initiative && state.completedInitiatives.includes(i.initiative)
     );
     const total = allCompletedItems.length;
     if (badge)   badge.textContent   = total > 0 ? total : '';
@@ -2300,6 +2367,7 @@
     // All done items, excluding items that belong to completed initiatives
     // (those are shown in the Completed Initiatives section)
     let items = state.items.filter(i =>
+      inContext(i) &&
       i.stage === 'Done' &&
       (!i.initiative || !state.completedInitiatives.includes(i.initiative))
     );
@@ -2326,7 +2394,7 @@
 
     // Populate initiative dropdown with all initiatives that have done items
     const allDone    = state.items.filter(i =>
-      i.stage === 'Done' && (!i.initiative || !state.completedInitiatives.includes(i.initiative))
+      inContext(i) && i.stage === 'Done' && (!i.initiative || !state.completedInitiatives.includes(i.initiative))
     );
     const initOptions = [...new Set(allDone.map(i => i.initiative).filter(Boolean))].sort();
     const initSel = document.getElementById('completed-initiative-filter');
@@ -2563,7 +2631,7 @@
     if (list) {
       const activeInits = getActiveInitiatives();
       list.innerHTML = activeInits.map(init => {
-        const count  = state.items.filter(i => i.initiative === init && isActiveVisible(i)).length;
+        const count  = state.items.filter(i => i.initiative === init && inContext(i) && isActiveVisible(i)).length;
         const active = state.filter.initiative === init;
         return `<li>
           <div class="initiative-chip-row">
@@ -2629,9 +2697,10 @@
 
     // Exclude tabled AND completed initiative items from weekly review
     const isReviewable = i =>
-      !i.initiative ||
-      (!state.tabledInitiatives.includes(i.initiative) &&
-       !state.completedInitiatives.includes(i.initiative));
+      inContext(i) &&
+      (!i.initiative ||
+       (!state.tabledInitiatives.includes(i.initiative) &&
+        !state.completedInitiatives.includes(i.initiative)));
 
     const all            = state.items.filter(isReviewable);
     const completedWeek  = all.filter(i => i.stage === 'Done' && (i.completedAt || i.updatedAt) >= weekStart);
@@ -2705,6 +2774,12 @@
     };
   }
 
+  function setFormContext(ctx) {
+    const val = ctx === 'personal' ? 'personal' : 'work';
+    const el  = document.querySelector(`#form-context-choice input[value="${val}"]`);
+    if (el) el.checked = true;
+  }
+
   function renderChecklistEditor() {
     const wrap = document.getElementById('checklist-editor');
     const prog = document.getElementById('checklist-progress');
@@ -2726,6 +2801,28 @@
       prog.hidden      = total === 0;
       prog.textContent = total ? `${done}/${total} done` : '';
     }
+  }
+
+  function renderContextToggle() {
+    const wrap = document.getElementById('context-toggle');
+    if (!wrap) return;
+    wrap.querySelectorAll('.context-toggle-btn').forEach(btn => {
+      const on = btn.dataset.contextView === state.contextView;
+      btn.classList.toggle('is-active', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    // Personal view gets a body flag so the board can shift its own accent
+    document.body.classList.toggle('view-personal', state.contextView === 'personal');
+  }
+
+  function setupContextToggle() {
+    const wrap = document.getElementById('context-toggle');
+    if (!wrap) return;
+    wrap.addEventListener('click', e => {
+      const btn = e.target.closest('.context-toggle-btn');
+      if (!btn) return;
+      setContextView(btn.dataset.contextView);
+    });
   }
 
   function setupChecklistEditor() {
@@ -2808,6 +2905,8 @@
       document.getElementById('form-notes').value      = item.notes || '';
       document.getElementById('form-next-step').value  = item.nextStep || '';
 
+      setFormContext(item.context === 'personal' ? 'personal' : 'work');
+
       _formChecklist = (item.checklist || []).map(c => ({ ...c }));
       renderChecklistEditor();
 
@@ -2826,8 +2925,10 @@
       state.ui.editingItemId = null;
       titleEl.textContent    = 'Capture Item';
       submitBtn.textContent  = 'Save Item';
+      document.getElementById('form-id').value = '';
       _formChecklist = [];
       renderChecklistEditor();
+      setFormContext(prefill.context || contextDefaultForCapture());
       if (prefill.lane)       document.getElementById('form-lane').value       = prefill.lane;
       if (prefill.initiative) document.getElementById('form-initiative').value = prefill.initiative;
     }
@@ -2872,6 +2973,7 @@
       nextStep:        (data.get('nextStep')       || '').trim(),
       waitingOn:       (data.get('waitingOn')      || '').trim(),
       waitingOnItemId: data.get('waitingOnItemId') || null,
+      context:         data.get('context') === 'personal' ? 'personal' : 'work',
       // Blank rows are discarded so an accidental "+ Add" never persists
       checklist:       _formChecklist
                          .map(c => ({ id: c.id, text: (c.text || '').trim(), done: !!c.done }))
@@ -2882,8 +2984,16 @@
       values.stage = 'Blocked';
     }
 
-    if (state.ui.editingItemId) {
-      updateItem(state.ui.editingItemId, values);
+    // Prefer the in-memory edit target, but fall back to the hidden id field.
+    // Anything that clears editingItemId before this handler runs (an overlay
+    // closing, a stray outside-click) would otherwise turn an edit into a
+    // silent duplicate. The id is only honoured if the item still exists.
+    const formId    = (data.get('id') || '').trim();
+    const editingId = state.ui.editingItemId ||
+                      (formId && state.items.some(i => i.id === formId) ? formId : null);
+
+    if (editingId) {
+      updateItem(editingId, values);
       showToast('Item updated');
     } else {
       addItem(createItem(values));
@@ -2892,13 +3002,24 @@
     closeCaptureModal();
   }
 
+  function renderQuickCapturePlaceholder() {
+    const input = document.getElementById('quick-capture-input');
+    if (!input) return;
+    input.placeholder = contextDefaultForCapture() === 'personal'
+      ? 'Capture a personal item — press Enter to save'
+      : 'Capture anything — press Enter to save';
+  }
+
   function handleQuickCapture() {
     const input = document.getElementById('quick-capture-input');
     const title = input.value.trim();
     if (!title) return;
-    addItem(createItem({ title, lane: 'inbox' }));
+    // Inherit the lens you're looking through, so capturing in Personal
+    // view doesn't silently file the item under work.
+    const context = contextDefaultForCapture();
+    addItem(createItem({ title, lane: 'inbox', context }));
     input.value = '';
-    showToast('Added to Inbox');
+    showToast(context === 'personal' ? 'Added to Inbox (personal)' : 'Added to Inbox');
   }
 
   /* --- Dependency Field --- */
@@ -3135,7 +3256,7 @@
     const summaryEl = document.getElementById('init-detail-summary');
     if (!body || !summaryEl) return;
 
-    const allItems = state.items.filter(i => i.initiative === name);
+    const allItems = state.items.filter(i => inContext(i) && i.initiative === name);
     const active   = allItems.filter(i => i.stage !== 'Done');
     const done     = allItems.filter(i => i.stage === 'Done')
       .sort((a, b) => (b.completedAt || b.updatedAt) - (a.completedAt || a.updatedAt));
@@ -3363,9 +3484,10 @@
 
     // Exclude tabled and completed initiative items
     const isReviewable = i =>
-      !i.initiative ||
-      (!state.tabledInitiatives.includes(i.initiative) &&
-       !state.completedInitiatives.includes(i.initiative));
+      inContext(i) &&
+      (!i.initiative ||
+       (!state.tabledInitiatives.includes(i.initiative) &&
+        !state.completedInitiatives.includes(i.initiative)));
 
     const all           = state.items.filter(isReviewable);
     const completedWeek = all.filter(i => i.stage === 'Done' && (i.completedAt || i.updatedAt) >= weekStart);
@@ -3980,12 +4102,14 @@
   async function init() {
     initSupabase();
     renderSyncIndicator();
+    loadContextView();
     await loadState();
     populateFormSelects();
     render();
     setupScrollSpy();
     setupDependencySearch();
     setupChecklistEditor();
+    setupContextToggle();
     setupEvents();
     setupRealtimeSync();
     setupVisibilityRefresh();

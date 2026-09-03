@@ -46,6 +46,13 @@
   --color-import-progress:       #3d5a80;
   --color-import-progress-light: #e8eef6;
 
+  /* Personal — muted teal. Distinct from sage (done), navy (import)
+     and terracotta (waiting) so a personal card never reads as a status. */
+  --color-personal:         #2f6f6b;
+  --color-personal-light:   #eef6f5;
+  --color-personal-border:  #c3ddd9;
+  --color-personal-tint:    #eaf4f2;
+
   /* Tabled — warm gray */
   --color-tabled:           #6b635c;
   --color-tabled-light:     #f3efeb;
@@ -1094,6 +1101,14 @@ dialog#distraction-modal #distraction-form {
   transform: translateY(-1px);
 }
 
+/* Personal items: tinted surface rather than a left stripe, because the
+   stripe already encodes lane/stage (waiting, blocked, in-progress). This
+   keeps both signals readable on the same card in Both view. */
+.card--personal {
+  background: var(--color-personal-tint);
+  border-color: var(--color-personal-border);
+}
+
 .card--open-loop   { border-left: 3px solid var(--color-open-loop); }
 .card--waiting     { border-left: 3px solid var(--color-accent-warm); opacity: 0.88; }
 .card--blocked     { border-left: 3px solid #a04040; opacity: 0.88; }
@@ -1103,6 +1118,98 @@ dialog#distraction-modal #distraction-form {
 .card--tabled      { opacity: 0.78; }
 .card--completed   { opacity: 0.70; }
 .card--completed .card-title { text-decoration: line-through; }
+
+.personal-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #ffffff;
+  background: var(--color-personal);
+  border-radius: 999px;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.personal-pill svg { display: block; }
+
+/* ============================================================
+   CONTEXT TOGGLE  (work / personal / both)
+   ============================================================ */
+
+.context-toggle {
+  display: flex;
+  gap: 2px;
+  margin-top: var(--space-md);
+  padding: 2px;
+  background: rgba(0,0,0,0.22);
+  border-radius: var(--radius-md);
+}
+
+.context-toggle-btn {
+  flex: 1 1 0;
+  padding: 6px 4px;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--color-sidebar-muted);
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 150ms, color 150ms;
+}
+
+.context-toggle-btn:hover { color: var(--color-sidebar-text); }
+
+.context-toggle-btn.is-active {
+  background: rgba(255,255,255,0.12);
+  color: #ffffff;
+}
+
+/* Personal lens gets the teal so it's obvious which lens is active */
+.context-toggle-btn.is-active[data-context-view="personal"] {
+  background: var(--color-personal);
+  color: #ffffff;
+}
+
+/* --- Work / Personal picker in the capture modal --- */
+
+.context-choice { display: flex; gap: var(--space-sm); }
+
+.context-choice-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  padding: 8px var(--space-md);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  font-size: 0.85rem;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-text-primary);
+  transition: border-color 150ms, background 150ms;
+}
+
+.context-choice-opt input { accent-color: var(--color-accent); cursor: pointer; }
+
+.context-choice-opt:has(input:checked) {
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+
+.context-choice-opt--personal input { accent-color: var(--color-personal); }
+
+.context-choice-opt--personal:has(input:checked) {
+  border-color: var(--color-personal);
+  background: var(--color-personal-light);
+}
 
 .card-main { cursor: pointer; }
 

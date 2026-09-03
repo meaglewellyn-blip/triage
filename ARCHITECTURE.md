@@ -45,6 +45,7 @@ The core unit. Every captured task is an item.
   clickupList:     string | null,
   displayGroup:    string | null,        // e.g. 'Imported — In Progress'
   lane:            string,               // see Lanes
+  context:         'work' | 'personal',  // defaults to 'work'
   workMode:        'figure-out' | 'collaborate' | 'review' | 'ready-to-launch' | null,
   stage:           'Unclear' | 'In progress' | 'Pending' | 'Blocked' | 'Done',
   dueDate:         'YYYY-MM-DD' | null,
@@ -72,6 +73,7 @@ state = {
   deletedInitiatives:   string[],   // names that should never reappear
   customInitiatives:    string[],   // user-added beyond the seeded INITIATIVES list
   filter:               { initiative: string | null },
+  contextView:          'work' | 'personal' | 'combined',  // per-device, NOT synced
   completedFilter:      { initiative, period: 'all' | 'this-week' | 'this-month' | 'past-3m' },
   activeItemId:         string | null,  // currently expanded card
   ui:                   { editingItemId: string | null },
@@ -131,6 +133,62 @@ State transitions happen via the `···` action button on any initiative chip i
 ### Inline "+ Add Initiative"
 
 The capture/edit modal has a `+` button next to the Initiative dropdown. Clicking it reveals an inline row that lets you name and add a new initiative without leaving the form. New names go into `state.customInitiatives` and appear everywhere the active initiatives are rendered.
+
+---
+
+## Contexts — work vs personal
+
+Every item carries a `context` of `'work'` or `'personal'`. The board shows one
+or both, chosen with the three-way toggle in the sidebar header (**Work /
+Personal / Both**).
+
+### Why a field and not a second board
+
+Personal items follow exactly the same lane logic, stages, work modes, due
+dates and drag-and-drop as work items — the only difference is which lens shows
+them. A single item collection keeps all of that shared, and makes the migration
+free: `applyMigrations` maps anything not explicitly `'personal'` to `'work'`,
+so every pre-existing item stays precisely where it was.
+
+**Initiatives are deliberately not contextual.** They remain one shared list;
+a personal item is normally unassigned, or can use a custom initiative.
+
+### The filter gate
+
+`inContext(item)` is the single gate every item-listing path runs through.
+`'combined'` lets everything past, so the default view behaves exactly as the
+board did before contexts existed.
+
+`getItemsForLane` covers the main lanes, but roughly a dozen renderers query
+`state.items` directly (Overdue, Tabled Items, Archived, tabled/completed
+initiative sections, Completed, sidebar initiative counts, the initiative
+detail modal, and both weekly-review paths). **Each of those calls `inContext`
+explicitly** — the gate is intentionally *not* buried inside `isActiveVisible`,
+because Completed and Archived deliberately bypass that function and would
+otherwise ignore the toggle.
+
+Distractions are *not* context-filtered. They are a separate subsystem for
+tracking unplanned work load, so they show in every view.
+
+### View state is per-device
+
+`state.contextView` is excluded from `buildStateData`, and persists on its own
+under `localStorage['triage_context_view_v1']`. Which lens you are looking
+through on your phone therefore never changes what your laptop shows, and
+switching views never touches synced data or the sync trust guards.
+
+### Visual treatment
+
+Personal items get a tinted card surface (`--color-personal-tint`) plus a teal
+"Personal" pill. **Deliberately not a left border** — the 3px left stripe is
+already spoken for by lane and stage (`open-loop`, `waiting`, `blocked`,
+`in-progress`), so `.card--personal` is declared *above* those stripe rules in
+`styles.css` to avoid clobbering `border-left-color`. A blocked personal item
+therefore shows both signals at once.
+
+Capture inherits the current lens: quick-capture in Personal view files the
+item as personal (the placeholder says so), and the capture modal's **Type**
+radio defaults to the active view, or Work in Both.
 
 ---
 
@@ -213,6 +271,14 @@ than dropped.
 ### Edit
 
 Click the **Edit** button on any card to reopen the same modal with the item loaded. Submitting calls `updateItem` and stamps `updatedAt`.
+
+`handleCaptureSubmit` resolves the edit target as
+`state.ui.editingItemId || <hidden form id, if that item still exists>`.
+The hidden `name="id"` field was previously set on open but never read, so
+anything that cleared `editingItemId` before the submit handler ran (an
+overlay closing, a stray outside-click) silently turned an edit into a
+**duplicate item**. The fallback closes that hole; `form-id` is explicitly
+blanked when opening a fresh capture so a new item can never adopt a stale id.
 
 ### Expand / collapse
 
@@ -306,6 +372,7 @@ if (['communicate','move-forward'].includes(workMode))   item.workMode = null;
 if (item.stage === 'Waiting')                            item.stage = 'Blocked';
 if (item.stage === 'Ready')                              item.stage = 'Pending';
 if (!Array.isArray(item.checklist))                      item.checklist = [];
+if (item.context !== 'personal')                         item.context = 'work';
 ```
 
 A v1→v2 migration also exists (`migrateItem`) for items captured under the original schema with `status`, `mentalWeight`, `executionType` fields.
@@ -528,6 +595,7 @@ DEFAULT_TABLED   = ['Better Websites']  // initiatives tabled by default on fres
 | Add a new stage value | `STAGES` array + form `<option>` in `index.html` + `stagePillHtml` mapping + CSS class |
 | Add a new work mode | DON'T — the system is capped at four. If you must: `WORK_MODES`, `WORK_MODE_ICONS`, form `<option>`, CSS `.wm--<id>` |
 | Add a new initiative permanently | Add to `INITIATIVES` array (the seed). For user-added ones, just use the `+` in the capture modal. |
+| Add a new item-listing view | Filter through `inContext(item)` as well as `isActiveVisible`, or the work/personal toggle will ignore it |
 | Change the password | Compute `sha256("newpassword")` (browser devtools), replace `AUTH_HASH` |
 | Disable Supabase sync | Set `SUPABASE_URL` to `'REPLACE_WITH_YOUR_SUPABASE_URL'` — `initSupabase` will skip wiring |
 | Reset Supabase state | Run `delete from triage_state where id = 'main';` in the Supabase SQL editor |
