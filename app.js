@@ -10,7 +10,7 @@
   ========================================================== */
 
   const STORAGE_KEY = 'triage_board_v4';
-  const APP_VERSION = '20260903a';
+  const APP_VERSION = '20260908a';
 
   /* ----------------------------------------------------------
      SUPABASE CONFIG
@@ -119,6 +119,7 @@
     deletedInitiatives:   [],
     customInitiatives:    [],
     distractions:         [],
+    deletedItems:         [],   // tombstones: [{ id, deletedAt }] — see DELETION section
     filter:               { initiative: null },
     contextView:          'combined',   // 'work' | 'personal' | 'combined' (per-device)
     completedFilter:      { initiative: null, period: 'all' },
@@ -403,9 +404,13 @@
           return;
         }
         _sync.fetchOverwriteBlocked = null;
-        restoreStateFromData(payload.new.data);
+        const rtStripped = restoreStateFromData(payload.new.data);
         applyMigrations();
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload.new.data)); } catch(e) {}
+        // Cache the state we actually applied, not the raw remote — caching the
+        // payload would reintroduce tombstoned items and drop our tombstones.
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(buildStateData())); } catch(e) {}
+        // Remote still holds items we deleted — push the repair back up.
+        if (rtStripped) scheduleSupabasePush(buildStateData());
         _sync.realtimeApplied++;
         _sync.lastFetchAt      = Date.now();
         _sync.lastFetchOk      = true;
@@ -739,6 +744,49 @@
      4. STORAGE
   ========================================================== */
 
+  /* ==========================================================
+     DELETION TOMBSTONES
+
+     The sync trust guard compares the newest `updatedAt` on either side.
+     A deletion *lowers* the local maximum, so deleting the newest item
+     made local look STALE — the guard then happily applied the remote
+     copy that still contained the item, and the deletion undid itself.
+
+     Tombstones make deletions explicit and survive a stale remote or an
+     older push from the other device. A tombstone only suppresses an
+     incoming item while it is at least as new as that item, so a genuine
+     later edit from another device still wins.
+  ========================================================== */
+
+  const TOMBSTONE_TTL_MS = 90 * 86400000;   // forget deletions after 90 days
+
+  function pruneTombstones(list) {
+    const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+    const seen = new Map();
+    for (const t of (list || [])) {
+      if (!t || !t.id) continue;
+      const at = typeof t.deletedAt === 'number' ? t.deletedAt : 0;
+      if (at < cutoff) continue;
+      // keep the newest tombstone per id
+      const prev = seen.get(t.id);
+      if (!prev || at > prev.deletedAt) seen.set(t.id, { id: t.id, deletedAt: at });
+    }
+    return [...seen.values()];
+  }
+
+  function mergeTombstones(a, b) {
+    return pruneTombstones([...(a || []), ...(b || [])]);
+  }
+
+  function isTombstoned(item, tombstones) {
+    if (!item || !item.id) return false;
+    const t = (tombstones || []).find(x => x.id === item.id);
+    if (!t) return false;
+    const updated = typeof item.updatedAt === 'number' ? item.updatedAt : 0;
+    // A newer edit elsewhere outranks the deletion; otherwise stay deleted.
+    return t.deletedAt >= updated;
+  }
+
   function buildStateData() {
     return {
       version:              2,
@@ -748,16 +796,33 @@
       deletedInitiatives:   state.deletedInitiatives,
       customInitiatives:    state.customInitiatives,
       distractions:         state.distractions,
+      deletedItems:         state.deletedItems,
     };
   }
 
+  /* Applies an incoming payload (localStorage cache, Supabase fetch, or a
+     realtime event). Returns how many items were suppressed by a local
+     tombstone, so remote-apply callers can push the repair back up. */
   function restoreStateFromData(data) {
-    state.items                = data.items                || [];
+    // Union local and incoming tombstones FIRST — a deletion this device
+    // knows about must not be forgotten just because the payload predates it.
+    state.deletedItems = mergeTombstones(state.deletedItems, data.deletedItems);
+
+    const incoming = data.items || [];
+    const kept     = incoming.filter(it => !isTombstoned(it, state.deletedItems));
+    const stripped = incoming.length - kept.length;
+
+    state.items                = kept;
     state.tabledInitiatives    = data.tabledInitiatives    || [];
     state.completedInitiatives = data.completedInitiatives || [];
     state.deletedInitiatives   = data.deletedInitiatives   || [];
     state.customInitiatives    = data.customInitiatives    || [];
     state.distractions         = data.distractions         || [];
+
+    if (stripped) {
+      console.info('[triage] suppressed ' + stripped + ' deleted item(s) from incoming payload');
+    }
+    return stripped;
   }
 
   function saveState() {
@@ -854,8 +919,9 @@
             // Push local up to Supabase to repair the stale remote.
             scheduleSupabasePush(buildStateData());
           } else {
-            restoreStateFromData(data.data);
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data.data)); } catch(e) {}
+            const loadStripped = restoreStateFromData(data.data);
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(buildStateData())); } catch(e) {}
+            if (loadStripped) scheduleSupabasePush(buildStateData());
             loadedFromSupabase = true;
             _sync.lastFetchOk             = true;
             _sync.lastFetchError          = null;
@@ -966,9 +1032,10 @@
         return false;
       }
       _sync.fetchOverwriteBlocked = null;
-      restoreStateFromData(data.data);
-      try { localStorage.setItem(STORAGE_KEY, remoteJson); } catch(e) {}
+      const refStripped = restoreStateFromData(data.data);
       applyMigrations();
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(buildStateData())); } catch(e) {}
+      if (refStripped) scheduleSupabasePush(buildStateData());
       render();
       renderSyncIndicator();
       console.info('[triage] Refreshed from Supabase:', _sync.lastFetchSummary);
@@ -1051,6 +1118,9 @@
         state.deletedInitiatives   = data.deletedInitiatives   || [];
         state.customInitiatives    = data.customInitiatives    || [];
         state.distractions         = data.distractions         || [];
+        // An import deliberately replaces state, so the file's tombstones win
+        // outright — merging local ones would silently re-delete restored items.
+        state.deletedItems         = pruneTombstones(data.deletedItems || []);
         state.filter.initiative    = null;
         state.activeItemId         = null;
         saveState();
@@ -1149,6 +1219,12 @@
   function deleteItem(id) {
     if (!confirm('Delete this item? This cannot be undone.')) return;
     state.items = state.items.filter(i => i.id !== id);
+    // Record the deletion so a stale remote (or the other device pushing an
+    // older copy) can't resurrect it. Without this the item comes straight back.
+    state.deletedItems = pruneTombstones([
+      ...(state.deletedItems || []),
+      { id, deletedAt: Date.now() },
+    ]);
     if (state.activeItemId === id) state.activeItemId = null;
     saveState();
     render();
@@ -3823,6 +3899,7 @@
       state.tabledInitiatives    = DEFAULT_TABLED.slice();
       state.completedInitiatives = [];
       state.deletedInitiatives   = [];
+      state.deletedItems         = [];
       state.filter.initiative    = null;
       state.completedFilter      = { initiative: null, period: 'all' };
       state.activeItemId         = null;

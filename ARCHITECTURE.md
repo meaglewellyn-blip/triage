@@ -75,6 +75,7 @@ state = {
   filter:               { initiative: string | null },
   contextView:          'work' | 'personal' | 'combined',  // per-device, NOT synced
   completedFilter:      { initiative, period: 'all' | 'this-week' | 'this-month' | 'past-3m' },
+  deletedItems:         { id, deletedAt }[],  // deletion tombstones
   activeItemId:         string | null,  // currently expanded card
   ui:                   { editingItemId: string | null },
 }
@@ -357,6 +358,44 @@ Three layers, in order of priority:
    - Import replaces all in-memory state and pushes to Supabase.
 
 The sync indicator (bottom-right) shows "Syncing…" briefly during a Supabase push, then "Saved" for 2s.
+
+### Deletion tombstones
+
+`state.deletedItems` holds `{ id, deletedAt }` entries and **is** part of the
+synced payload.
+
+The bug this fixes: `shouldBlockFetchOverwrite` compares the newest
+`updatedAt` on each side. A deletion *lowers* the local maximum, so deleting
+the newest item made local look stale — the guard then applied the remote copy
+that still contained the item, and **the deletion undid itself**. Reproduced
+against live data on 2026-09-08 with the item "Test", which was the newest item
+on the board by ~23 hours.
+
+Three things were wrong together:
+
+1. No record of the deletion existed, so nothing could distinguish "remote is
+   newer" from "local deleted the newest thing."
+2. All three remote-apply paths cached the **raw remote payload**
+   (`localStorage.setItem(STORAGE_KEY, JSON.stringify(data.data))`), which would
+   have reintroduced deleted items and discarded tombstones. They now cache
+   `buildStateData()` — the state actually applied.
+3. Nothing pushed the repair back up, so the stale remote stayed stale.
+
+How it works now:
+
+- `deleteItem` records a tombstone alongside removing the item.
+- `restoreStateFromData` unions local and incoming tombstones **first** (a
+  deletion this device knows about must not be forgotten just because the
+  payload predates it), then filters incoming items through `isTombstoned`.
+  It returns the number suppressed.
+- A tombstone suppresses an item only while `deletedAt >= item.updatedAt`, so a
+  genuine later edit from the other device still wins and the item legitimately
+  returns.
+- When anything was suppressed, the remote-apply paths `scheduleSupabasePush`
+  to repair the stale remote.
+- Tombstones prune after `TOMBSTONE_TTL_MS` (90 days), bounding growth.
+- A JSON import replaces tombstones outright rather than merging — an import is
+  authoritative by intent, and merging would silently re-delete restored items.
 
 ### Fresh-install safety guard
 
